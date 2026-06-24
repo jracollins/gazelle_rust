@@ -35,6 +35,10 @@ message RustImportsResponse {
     repeated string compile_data = 5;
     bool success = 6;
     string error_msg = 7;
+    // mod name -> explicit `#[path = "..."]` redirect (only set for extern mods
+    // that have one). Lets the resolver locate modules kept outside the default
+    // file layout, e.g. unit tests in a sibling `tests/` directory.
+    map<string, string> extern_mod_paths = 8;
 }
 
 message LockfileCratesRequest {
@@ -70,6 +74,9 @@ message CargoCrateInfo {
     string name = 1;
     repeated string srcs = 2;
     bool proc_macro = 3;
+    // cargo `required-features` for this target (bin/bench/test/example). The target
+    // is only built when all of these are enabled — see generate.go.
+    repeated string required_features = 4;
 }
 
 /** Represents a dependency alias where the local name differs from the package name.

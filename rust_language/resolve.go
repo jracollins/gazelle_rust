@@ -119,7 +119,17 @@ func (l *rustLang) Resolve(c *config.Config, ix *resolve.RuleIndex,
 				// TODO(will): not doing this for rust_binary because this fixes the case where a
 				// binary uses a library of the same name, which happens for the auto lib.rs and
 				// main.rs bins/libs, but unclear if this is correct in all cases
-				if crateName != "" && imp == crateName && r.Kind() != "rust_binary" {
+				// A crate may import itself by name; drop such self-imports. EXCEPT:
+				//  - rust_binary: a bin commonly uses a same-named lib (the auto
+				//    lib.rs/main.rs split), see TODO above.
+				//  - a standalone integration test (rust_test with no tested crate):
+				//    its crate name is derived from the test FILE name and can collide
+				//    with a DIFFERENT crate it imports (e.g. tests/gateway_conformance.rs
+				//    importing the `gateway_conformance` harness crate). Such a test only
+				//    ever refers to itself via `crate::`, so a name match here is always
+				//    an external crate, not a self-import.
+				isStandaloneTest := r.Kind() == "rust_test" && ruleData.testedCrate == nil
+				if crateName != "" && imp == crateName && r.Kind() != "rust_binary" && !isStandaloneTest {
 					// you are allowed to import yourself
 					continue
 				}

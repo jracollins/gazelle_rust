@@ -43,6 +43,7 @@ fn handle_rust_imports_request(
             response.test_imports = rust_imports.test_imports;
             response.extern_mods = rust_imports.extern_mods;
             response.compile_data = rust_imports.compile_data;
+            response.extern_mod_paths = rust_imports.extern_mod_paths;
         }
         Err(err) => {
             // Don't crash gazelle if we encounter an error, instead bubble it up so that we can
@@ -83,6 +84,7 @@ fn build_crate_info(product: cargo_toml::Product) -> CargoCrateInfo {
         crate_info.srcs = vec![normalized_path];
     }
     crate_info.proc_macro = product.proc_macro;
+    crate_info.required_features = product.required_features;
 
     crate_info
 }

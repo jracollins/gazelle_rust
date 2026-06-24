@@ -1,6 +1,6 @@
 #![deny(unused_must_use)]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
@@ -18,6 +18,8 @@ pub struct RustImports {
     pub test_imports: Vec<String>,
     pub extern_mods: Vec<String>,
     pub compile_data: Vec<String>,
+    /// extern mod name -> explicit `#[path = "..."]` redirect, if present.
+    pub extern_mod_paths: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -76,6 +78,7 @@ pub fn parse_imports_from_str(
         test_imports: filter_imports(root_scope.test_imports),
         extern_mods: visitor.extern_mods.into_iter().collect(),
         compile_data: visitor.compile_data.into_iter().collect(),
+        extern_mod_paths: visitor.extern_mod_paths,
     })
 }
 
@@ -205,6 +208,8 @@ struct AstVisitor<'ast> {
     hints: Hints,
     /// bare mods defined in external files
     extern_mods: HashSet<String>,
+    /// extern mod name -> `#[path = "..."]` redirect, if the decl has one
+    extern_mod_paths: HashMap<String, String>,
     /// mods that are disallowed from being added to the current scope; this is currently only used
     /// for a hack, see below
     mod_denylist: HashSet<Ident<'ast>>,
@@ -229,6 +234,7 @@ impl AstVisitor<'_> {
             scope_mods: HashSet::default(),
             hints: Hints::default(),
             extern_mods: HashSet::new(),
+            extern_mod_paths: HashMap::new(),
             mod_denylist: HashSet::new(),
             enabled_features: enabled_features.iter().cloned().collect(),
             compile_data: HashSet::new(),
@@ -317,7 +323,11 @@ impl<'ast> AstVisitor<'ast> {
         match meta {
             syn::Meta::Path(path) => {
                 if let Some(ident) = path.get_ident() {
-                    ident == "test"
+                    // `test` is enabled so its deps are tracked (as test_imports). `unix` is
+                    // enabled because we only build for unix targets (linux/macOS) — without
+                    // it, deps used under `#[cfg(unix)]` (e.g. libc) get dropped. Other bare
+                    // platform cfgs (e.g. `windows`) stay disabled.
+                    ident == "test" || ident == "unix"
                 } else {
                     true
                 }
@@ -531,6 +541,32 @@ impl<'ast> AstVisitor<'ast> {
         }
     }
 
+    /// Scan a raw token stream for `ident::` path roots and record them as imports.
+    /// Used for `macro_rules!` bodies: their `(...) => { ... }` arm syntax never parses
+    /// as an Expr/Stmt (so `visit_macro_tokens` can't see inside the expansion), which
+    /// means a crate referenced ONLY inside a macro expansion — e.g. `paste::paste!` —
+    /// is missed and its dependency dropped. `add_import` already filters crate/self/super.
+    fn scan_macro_path_roots(&mut self, tokens: TokenStream) {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        for (i, tree) in trees.iter().enumerate() {
+            match tree {
+                TokenTree::Group(group) => self.scan_macro_path_roots(group.stream()),
+                TokenTree::Ident(ident) => {
+                    let followed_by_path_sep = matches!(
+                        (trees.get(i + 1), trees.get(i + 2)),
+                        (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+                            if a.as_char() == ':' && b.as_char() == ':'
+                    );
+                    let name = ident.to_string();
+                    if followed_by_path_sep && !matches!(name.as_str(), "std" | "core" | "alloc") {
+                        self.add_import(ident.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn copy_from_visitor(&mut self, other: AstVisitor<'_>) {
         self.mod_stack = VecDeque::new();
         for scope in other.mod_stack {
@@ -562,6 +598,7 @@ impl<'ast> AstVisitor<'ast> {
             self.mod_denylist.insert(id_copy);
         }
         self.extern_mods = other.extern_mods;
+        self.extern_mod_paths = other.extern_mod_paths;
         self.compile_data = other.compile_data;
         self.enabled_features = other.enabled_features;
         self.hints.has_main = other.hints.has_main;
@@ -726,7 +763,24 @@ impl<'ast> Visit<'ast> for AstVisitor<'ast> {
 
         if self.is_root_scope() && node.content.is_none() {
             // this mod is defined in a different file
-            self.extern_mods.insert(node.ident.unraw().to_string());
+            let mod_name = node.ident.unraw().to_string();
+            // honor an explicit `#[path = "..."]` redirect so the resolver can
+            // locate modules that don't follow default file layout (e.g. unit
+            // tests kept in a sibling `tests/` directory).
+            for attr in &node.attrs {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if nv.path.is_ident("path") {
+                        if let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(s),
+                            ..
+                        }) = &nv.value
+                        {
+                            self.extern_mod_paths.insert(mod_name.clone(), s.value());
+                        }
+                    }
+                }
+            }
+            self.extern_mods.insert(mod_name);
         }
 
         self.add_mod(&node.ident);
@@ -797,6 +851,9 @@ impl<'ast> Visit<'ast> for AstVisitor<'ast> {
                 if let Some(new_ident) = &node.ident {
                     self.add_mod(new_ident);
                 }
+                // The macro BODY may reference crates used only inside its expansion
+                // (e.g. `paste::paste!`); scan it so those deps aren't dropped.
+                self.scan_macro_path_roots(node.mac.tokens.clone());
             }
         }
 
@@ -836,6 +893,16 @@ impl<'ast> Visit<'ast> for AstVisitor<'ast> {
                         };
                     }
                 }
+            }
+        }
+        // `quote!`/`quote_spanned!` bodies are code generated FOR THE CONSUMER of a (proc-)macro.
+        // Crate paths inside them (e.g. `::columnar_store::ColumnType` in a derive) resolve in the
+        // consumer's context, not this crate's — so they must NOT be counted as this crate's deps.
+        // Doing so wrongly makes a proc-macro depend on those crates, and can form a cycle
+        // (columnar-store-derive -> columnar-store -> columnar-store-derive).
+        if let Some(ident) = macro_ident {
+            if ident == "quote" || ident == "quote_spanned" {
+                return;
             }
         }
         self.visit_macro_tokens(mac.tokens.clone());

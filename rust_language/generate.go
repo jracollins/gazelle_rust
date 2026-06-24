@@ -536,8 +536,42 @@ func (l *rustLang) generateCargoRule(c *config.Config, args *language.GenerateAr
 	hasBuildScript bool, hasMainRs bool, parentCrateName string, parentCrateEdition string,
 	enabledFeatures []string, dependencyAliases map[string]string, result *language.GenerateResult) {
 
+	// Honor cargo `required-features`: skip a target whose required features aren't all
+	// enabled (matches `cargo build`, which won't build it). Without this, feature-gated
+	// targets (e.g. benchmark bins with required-features=["benchmarks"]) are generated
+	// unconditionally and fail because their feature-gated deps/modules aren't compiled.
+	for _, rf := range crateInfo.RequiredFeatures {
+		enabled := false
+		for _, ef := range enabledFeatures {
+			if ef == rf {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			return
+		}
+	}
+
 	targetName := crateInfo.Name + suffix
 	crateName := crateInfo.Name
+
+	// Avoid Bazel target-name collisions among rules generated in THIS pass: cargo permits
+	// the same name across target KINDS (e.g. a `[[bin]]` and an integration test both named
+	// "backtest"), but Bazel requires unique names within a package. Only check result.Gen —
+	// NOT args.File.Rules — because on an update the existing file contains this rule's OWN
+	// prior version, which must not be treated as a collision (that would rename every rule to
+	// <name>_rs on every run, and the rename would also set a dashed crate_name). crateName is
+	// left untouched, so the Rust crate name is unchanged (only the Bazel target name suffixed).
+	{
+		existingNames := map[string]bool{}
+		for _, gen := range result.Gen {
+			existingNames[gen.Name()] = true
+		}
+		if fresh := freshRuleName(targetName, existingNames); fresh != nil {
+			targetName = *fresh
+		}
+	}
 
 	var crateRoot *string = nil
 	if len(crateInfo.Srcs) == 1 {
@@ -696,7 +730,13 @@ func (l *rustLang) discoverModule(c *config.Config, file string, enabledFeatures
 			var externModPath string
 			var childIsModRoot bool
 
-			if isModRoot {
+			if override, ok := response.ExternModPaths[externMod]; ok && override != "" {
+				// honor an explicit `#[path = "..."]` on the mod declaration. Per
+				// rustc, a #[path] on a mod in a non-inline file resolves relative
+				// to the directory of the declaring file.
+				externModPath = filepath.Join(dirname, override)
+				childIsModRoot = filepath.Base(override) == "mod.rs"
+			} else if isModRoot {
 				// first check for an adjacent file
 				externModPath = filepath.Join(dirname, externMod+".rs")
 				childIsModRoot = false

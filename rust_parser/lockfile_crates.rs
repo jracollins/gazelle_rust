@@ -67,10 +67,19 @@ pub fn is_workspace_target(name: &str) -> bool {
     name == "direct-cargo-bazel-deps"
 }
 
-/// Cargo lockfiles don't indicate whether a crate is a proc_macro, so we guess. If a crate depends
-/// on proc_macro or proc_macro2, it is almost certainly a proc_macro.
+/// Cargo lockfiles don't indicate whether a crate is a proc_macro, so we guess from its
+/// dependencies. A crate that depends on the proc-macro authoring stack (proc-macro2 / quote
+/// / syn) is almost certainly a proc-macro. Checking only proc-macro2 missed proc-macros that
+/// pull in quote/syn but not proc-macro2 directly (e.g. rust_decimal_macros -> quote, syn).
 pub fn is_proc_macro_dep(name: &str) -> bool {
-    name == "proc-macro" || name == "proc-macro2"
+    name == "proc-macro" || name == "proc-macro2" || name == "quote" || name == "syn"
+}
+
+/// The proc-macro *authoring* libraries themselves depend on proc-macro2/quote/syn but are NOT
+/// proc-macros — they are plain rlibs. Without excluding them, the heuristic above flags them
+/// (e.g. `quote` depends on proc-macro2) and rules_rust rejects them in proc_macro_deps.
+pub fn is_proc_macro_authoring_lib(name: &str) -> bool {
+    matches!(name, "proc-macro2" | "quote" | "syn" | "proc-macro")
 }
 
 pub fn make_package_dependency(dep: &cargo_lock::Dependency) -> PackageDependency {
@@ -101,10 +110,11 @@ pub fn get_cargo_lockfile_crates(lockfile_path: PathBuf) -> Result<Vec<Package>,
             let package = Package {
                 name: name.clone(),
                 crate_name: name.replace('-', "_"),
-                proc_macro: pkg
-                    .dependencies
-                    .iter()
-                    .any(|dep| is_proc_macro_dep(dep.name.as_str())),
+                proc_macro: !is_proc_macro_authoring_lib(&name)
+                    && pkg
+                        .dependencies
+                        .iter()
+                        .any(|dep| is_proc_macro_dep(dep.name.as_str())),
                 version: pkg.version.to_string(),
                 workspace_member: pkg.source.is_none(),
                 dependencies: pkg
