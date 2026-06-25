@@ -106,6 +106,13 @@ fn handle_cargo_toml_request(
             cargo_toml::Inheritable::Set(edition) => edition.to_string(),
             cargo_toml::Inheritable::Inherited => String::new(),
         };
+        // Resolved crate version (workspace inheritance already applied by
+        // complete_from_path) -> rust target `version` -> CARGO_PKG_VERSION, matching
+        // cargo. rules_rust otherwise defaults to "0.0.0", which diverges from cargo.
+        response.version = match &package.version {
+            cargo_toml::Inheritable::Set(version) => version.to_string(),
+            cargo_toml::Inheritable::Inherited => String::new(),
+        };
         let feature_resolver = cargo_toml::features::Resolver::new();
         let features_hmap = feature_resolver.parse(&manifest).features;
         let default_features_set = features_hmap

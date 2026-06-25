@@ -99,4 +99,6 @@ message CargoTomlResponse {
     repeated DependencyAlias dependency_aliases = 10;
     bool success = 11;
     string error_msg = 12;
+    // Resolved crate version (workspace inheritance applied) -> rust target `version`.
+    string version = 13;
 }
