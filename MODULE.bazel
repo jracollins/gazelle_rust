@@ -41,6 +41,10 @@ crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "gazelle_rust_crates",
     cargo_lockfile = "//:Cargo.lock",
+    # rules_rust 0.71.1+ requires a transitive (non-root) crate_universe repo to ship a
+    # pinned lockfile — repinning across module boundaries is unsupported, so a consumer
+    # module (e.g. chappie) cannot repin this. Regenerate with `CARGO_BAZEL_REPIN=1 bazel mod deps`.
+    lockfile = "//:Cargo.Bazel.lock",
     manifests = ["//:Cargo.toml"],
 )
 use_repo(crate, "gazelle_rust_crates")
