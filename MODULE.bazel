@@ -24,7 +24,7 @@ go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 use_repo(go_sdk, "go_default_sdk")
 
 ### Rust
-bazel_dep(name = "rules_rust", version = "0.67.0")
+bazel_dep(name = "rules_rust", version = "0.71.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(edition = "2024")
@@ -34,10 +34,10 @@ register_toolchains("@rust_toolchains//:all")
 
 ### Protobuf (prost)
 
-bazel_dep(name = "rules_rust_prost", version = "0.67.0")
+bazel_dep(name = "rules_rust_prost", version = "0.71.0")
 
 # Rust dependencies
-crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "gazelle_rust_crates",
     cargo_lockfile = "//:Cargo.lock",
